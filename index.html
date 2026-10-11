@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#172554">
+  <title>Demo Kamera Sekolah</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+    body { margin: 0; background: #f3f5f9; color: #172033; min-height: 100vh; display: grid; place-items: center; padding: 18px; box-sizing: border-box; }
+    main { width: min(100%, 480px); background: white; border-radius: 20px; padding: 24px; box-sizing: border-box; box-shadow: 0 12px 40px #0f172a14; }
+    h1 { font-size: 1.45rem; margin: 0 0 8px; }
+    p { line-height: 1.55; color: #475569; }
+    .notice { background: #eff6ff; border: 1px solid #bfdbfe; padding: 12px; border-radius: 12px; font-size: .94rem; }
+    video, img { width: 100%; border-radius: 14px; background: #0f172a; margin-top: 12px; }
+    video { display: none; transform: scaleX(-1); }
+    img { display: none; }
+    button { width: 100%; border: 0; border-radius: 12px; padding: 14px 16px; font-size: 1rem; font-weight: 650; margin-top: 12px; cursor: pointer; background: #1d4ed8; color: white; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .secondary { background: #e2e8f0; color: #172033; }
+    #status { min-height: 1.5em; font-size: .95rem; }
+    .small { font-size: .83rem; color: #64748b; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Demo Kamera Sekolah</h1>
+  <p>Demonstrasi kamera depan dan pengiriman foto untuk tugas sekolah.</p>
+  <div class="notice">
+    Kamera akan digunakan setelah kamu memilih <b>Mulai dan izinkan kamera</b>.
+    Jika kamu melanjutkan, foto akan diambil otomatis dan dikirim ke email tujuan yang telah dikonfigurasi.
+  </div>
+  <video id="video" autoplay playsinline muted></video>
+  <img id="preview" alt="Pratinjau foto yang diambil">
+  <button id="start">Mulai dan izinkan kamera</button>
+  <button id="send" hidden disabled>Kirim foto ke email</button>
+  <button id="retake" class="secondary" hidden>Ambil ulang</button>
+  <p id="status" role="status" aria-live="polite"></p>
+  <p class="small">Gunakan hanya untuk demonstrasi dengan orang yang mengetahui dan menyetujui pengambilan foto.</p>
+</main>
+<script>
+(() => {
+  const startBtn = document.querySelector("#start");
+  const sendBtn = document.querySelector("#send");
+  const retakeBtn = document.querySelector("#retake");
+  const video = document.querySelector("#video");
+  const preview = document.querySelector("#preview");
+  const status = document.querySelector("#status");
+  let stream = null;
+  let photoData = null;
+
+  function stopCamera() {
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    stream = null;
+    video.srcObject = null;
+  }
+
+  function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+  async function captureAfterConsent() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("Browser ini tidak mendukung kamera. Buka link HTTPS di Chrome atau browser terbaru.");
+    }
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    video.srcObject = stream;
+    video.style.display = "block";
+    await video.play();
+
+    // Tunggu sampai kamera mengirimkan frame yang valid.
+    for (let i = 0; i < 30 && (!video.videoWidth || !video.videoHeight); i++) await wait(150);
+    if (!video.videoWidth || !video.videoHeight) throw new Error("Kamera belum siap. Silakan coba lagi.");
+
+    await wait(900);
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    // Preview kamera dicerminkan; foto disimpan dalam orientasi normal.
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    photoData = canvas.toDataURL("image/jpeg", 0.86);
+    preview.src = photoData;
+    preview.style.display = "block";
+    video.style.display = "none";
+    stopCamera();
+    sendBtn.hidden = false;
+    sendBtn.disabled = false;
+    retakeBtn.hidden = false;
+    status.textContent = "Foto diambil. Tekan “Kirim foto ke email” untuk mengirimnya.";
+  }
+
+  startBtn.addEventListener("click", async () => {
+    startBtn.disabled = true;
+    status.textContent = "Meminta izin kamera…";
+    try {
+      await captureAfterConsent();
+      startBtn.hidden = true;
+    } catch (err) {
+      stopCamera();
+      status.textContent = err.message || "Kamera tidak dapat dibuka. Periksa izin kamera browser.";
+      startBtn.disabled = false;
+    }
+  });
+
+  retakeBtn.addEventListener("click", async () => {
+    preview.style.display = "none";
+    sendBtn.disabled = true;
+    retakeBtn.disabled = true;
+    status.textContent = "Mengambil foto ulang…";
+    try {
+      await captureAfterConsent();
+    } catch (err) {
+      stopCamera();
+      status.textContent = err.message || "Tidak bisa mengambil foto.";
+    } finally {
+      sendBtn.disabled = !photoData;
+      retakeBtn.disabled = false;
+    }
+  });
+
+  sendBtn.addEventListener("click", async () => {
+    if (!photoData) return;
+    sendBtn.disabled = true;
+    status.textContent = "Mengirim foto…";
+    try {
+      const response = await fetch("/send-photo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageData: photoData, consent: true })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Pengiriman gagal.");
+      status.textContent = "Berhasil! Foto telah dikirim ke email tujuan.";
+      retakeBtn.hidden = true;
+    } catch (err) {
+      status.textContent = (err.message || "Pengiriman gagal.") + " Coba lagi setelah server dan email dikonfigurasi.";
+      sendBtn.disabled = false;
+    }
+  });
+
+  window.addEventListener("pagehide", stopCamera);
+})();
+</script>
+</body>
+</html>
